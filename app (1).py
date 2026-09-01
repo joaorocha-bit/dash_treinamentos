@@ -76,7 +76,7 @@ def conectar_planilha():
         ... (demais campos do JSON da service account)
 
         [gsheets]
-        spreadsheet_id = "ID_DA_PLANILHA"   # recomendado
+        spreadsheet_id = "1NpLy9AQsaJTaR9_bT7IEDDDuYidTvzZE0PLCGTeITaE"   # recomendado
         # ou, alternativamente:
         # spreadsheet_name = "Nome da Planilha"
     """
