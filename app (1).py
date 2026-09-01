@@ -13,6 +13,7 @@ Como usar:
 3. Rode com: streamlit run app.py
 """
 
+import re
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -76,7 +77,7 @@ def conectar_planilha():
         ... (demais campos do JSON da service account)
 
         [gsheets]
-        spreadsheet_id = "1NpLy9AQsaJTaR9_bT7IEDDDuYidTvzZE0PLCGTeITaE"   # recomendado
+        spreadsheet_id = "ID_DA_PLANILHA"   # recomendado
         # ou, alternativamente:
         # spreadsheet_name = "Nome da Planilha"
     """
@@ -214,6 +215,97 @@ def calcular_pendentes_por_grupo(df_tabela):
     return resumo
 
 
+def extrair_numero_grupo(nome_grupo: str):
+    """Extrai o número contido no nome do grupo (ex: 'Grupo 10' -> 10) para
+    permitir ordenação natural das colunas (evita 'Grupo 10' antes de 'Grupo 2')."""
+    numeros = re.findall(r"\d+", str(nome_grupo))
+    return int(numeros[0]) if numeros else 9999
+
+
+def montar_base_geral(df_treinamentos, df_registros, df_colaboradores):
+    """
+    Monta o produto cartesiano Colaborador x Treinamento (apenas para os
+    colaboradores filtrados) e cruza com os registros existentes.
+    Colaboradores/treinamentos sem registro salvo são tratados como
+    '0 - Não Realizado', igual à regra usada na visão individual.
+    """
+    df_colab_ids = df_colaboradores[["ID_Colaborador", "Nome"]].drop_duplicates().copy()
+    df_treinos_min = df_treinamentos[["ID_Treinamento", "Grupo"]].drop_duplicates().copy()
+
+    df_colab_ids["_chave"] = 1
+    df_treinos_min["_chave"] = 1
+    base = df_colab_ids.merge(df_treinos_min, on="_chave").drop(columns="_chave")
+
+    base = base.merge(
+        df_registros[["ID_Colaborador", "ID_Treinamento", "Status"]],
+        on=["ID_Colaborador", "ID_Treinamento"],
+        how="left",
+    )
+    base["Status"] = base["Status"].fillna(STATUS_NAO_REALIZADO)
+    base["Realizado"] = base["Status"].apply(status_e_realizado)
+    return base
+
+
+def montar_matriz_geral(df_treinamentos, df_registros, df_colaboradores):
+    """
+    Constrói a tabela 'Visão Geral': uma linha por colaborador e uma
+    coluna por grupo de treinamento, mostrando quantos treinamentos
+    faltam (status 0) em cada grupo, ou 'Completo' quando não há pendências.
+    Inclui também colunas de resumo (Total, Realizados, % Progresso).
+    """
+    base = montar_base_geral(df_treinamentos, df_registros, df_colaboradores)
+
+    # --- Resumo geral por colaborador (independente de grupo) ---
+    resumo = base.groupby("Nome").agg(
+        Total_Treinamentos=("Realizado", "size"),
+        Total_Realizados=("Realizado", "sum"),
+    ).reset_index()
+    resumo["Total_Nao_Realizados"] = (
+        resumo["Total_Treinamentos"] - resumo["Total_Realizados"]
+    )
+    resumo["Percentual"] = (
+        resumo["Total_Realizados"] / resumo["Total_Treinamentos"] * 100
+    ).round(1)
+
+    # --- Pendências por colaborador x grupo ---
+    pendentes_por_grupo = (
+        base[~base["Realizado"]]
+        .groupby(["Nome", "Grupo"])
+        .size()
+        .reset_index(name="Pendentes")
+    )
+
+    grupos_ordenados = sorted(
+        base["Grupo"].drop_duplicates().tolist(), key=extrair_numero_grupo
+    )
+
+    pivot_pendentes = pendentes_por_grupo.pivot(
+        index="Nome", columns="Grupo", values="Pendentes"
+    ).reindex(columns=grupos_ordenados).fillna(0).astype(int)
+
+    # Formata cada célula: "✅ Completo" ou "⚠️ X pendente(s)"
+    def formatar_celula(qtd):
+        return "✅ Completo" if qtd == 0 else f"⚠️ {qtd} pendente(s)"
+
+    pivot_formatado = pivot_pendentes.applymap(formatar_celula)
+    pivot_formatado = pivot_formatado.reindex(resumo["Nome"]).reset_index()
+
+    matriz_final = resumo.merge(pivot_formatado, on="Nome", how="left")
+    matriz_final = matriz_final.rename(columns={
+        "Nome": "Colaborador",
+        "Total_Treinamentos": "Total",
+        "Total_Realizados": "Realizados",
+        "Total_Nao_Realizados": "Não Realizados",
+        "Percentual": "% Progresso",
+    })
+
+    colunas_ordenadas = (
+        ["Colaborador", "Total", "Realizados", "Não Realizados", "% Progresso"]
+        + grupos_ordenados
+    )
+    return matriz_final[colunas_ordenadas]
+
+
 # =====================================================================
 # 5. GRAVAÇÃO NO GOOGLE SHEETS
 # =====================================================================
@@ -332,133 +424,191 @@ def main():
                  "Ligado: mostra os 6 status individualmente.",
         )
 
-    # Monta a tabela consolidada dos 90 treinamentos do colaborador selecionado
-    df_tabela_colab = montar_tabela_colaborador(
-        df_treinamentos, df_registros, id_colaborador_selecionado
-    )
-
     # =================================================================
-    # SEÇÃO 1 - VISÃO GERAL (DASHBOARD)
+    # ABAS PRINCIPAIS: Dashboard individual x Visão Geral (todos colaboradores)
     # =================================================================
-    st.subheader(f"📊 Visão Geral — {nome_selecionado}")
+    aba_individual, aba_geral = st.tabs(["👤 Colaborador", "🌍 Visão Geral"])
 
-    total, realizados, nao_realizados, percentual = calcular_metricas(df_tabela_colab)
+    # -----------------------------------------------------------------
+    # ABA 1 - DASHBOARD E EDIÇÃO DO COLABORADOR SELECIONADO
+    # -----------------------------------------------------------------
+    with aba_individual:
+        # Monta a tabela consolidada dos 90 treinamentos do colaborador selecionado
+        df_tabela_colab = montar_tabela_colaborador(
+            df_treinamentos, df_registros, id_colaborador_selecionado
+        )
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total de Treinamentos", total)
-    col2.metric("Realizados (1 a 5)", realizados)
-    col3.metric("Não Realizados (0)", nao_realizados)
-    col4.metric("Progresso Geral", f"{percentual:.1f}%")
+        st.subheader(f"📊 Visão Geral — {nome_selecionado}")
 
-    st.progress(min(percentual / 100, 1.0))
+        total, realizados, nao_realizados, percentual = calcular_metricas(df_tabela_colab)
 
-    st.divider()
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total de Treinamentos", total)
+        col2.metric("Realizados (1 a 5)", realizados)
+        col3.metric("Não Realizados (0)", nao_realizados)
+        col4.metric("Progresso Geral", f"{percentual:.1f}%")
 
-    grafico_col1, grafico_col2 = st.columns(2)
+        st.progress(min(percentual / 100, 1.0))
 
-    # ---- Gráfico 1: % Realizado vs Não Realizado (ou detalhado) por grupo ----
-    with grafico_col1:
-        st.markdown("**Percentual de Realização por Grupo**")
-        dados_grupo = calcular_dados_por_grupo(df_tabela_colab, visao_detalhada)
+        st.divider()
 
-        if not visao_detalhada:
-            fig1 = px.bar(
-                dados_grupo,
-                x="Grupo",
-                y="Percentual",
-                color="Situação",
-                barmode="stack",
-                text="Percentual",
-                color_discrete_map={
-                    "Realizado": "#2E7D32",
-                    "Não Realizado": "#C62828",
-                },
-                labels={"Percentual": "% do Grupo"},
-            )
-            fig1.update_traces(texttemplate="%{text:.1f}%", textposition="inside")
-            fig1.update_layout(yaxis_range=[0, 100])
-        else:
-            fig1 = px.bar(
-                dados_grupo,
-                x="Grupo",
-                y="Quantidade",
-                color="Status",
-                barmode="stack",
-                category_orders={"Status": LISTA_STATUS},
-            )
+        grafico_col1, grafico_col2 = st.columns(2)
 
-        st.plotly_chart(fig1, use_container_width=True)
+        # ---- Gráfico 1: % Realizado vs Não Realizado (ou detalhado) por grupo ----
+        with grafico_col1:
+            st.markdown("**Percentual de Realização por Grupo**")
+            dados_grupo = calcular_dados_por_grupo(df_tabela_colab, visao_detalhada)
 
-    # ---- Gráfico 2: Quantidade de pendentes por grupo ----
-    with grafico_col2:
-        st.markdown("**Treinamentos Pendentes (Status 0) por Grupo**")
-        dados_pendentes = calcular_pendentes_por_grupo(df_tabela_colab)
-
-        if dados_pendentes.empty:
-            st.success("Nenhum treinamento pendente para este colaborador! 🎉")
-        else:
-            fig2 = px.bar(
-                dados_pendentes,
-                x="Grupo",
-                y="Pendentes",
-                text="Pendentes",
-                color_discrete_sequence=["#C62828"],
-            )
-            fig2.update_traces(textposition="outside")
-            st.plotly_chart(fig2, use_container_width=True)
-
-    st.divider()
-
-    # =================================================================
-    # SEÇÃO 2 - EDIÇÃO DOS TREINAMENTOS
-    # =================================================================
-    st.subheader("✏️ Edição dos Treinamentos")
-    st.caption(
-        "Altere o status diretamente na tabela e clique em "
-        "**Salvar Alterações** para gravar no Google Sheets."
-    )
-
-    df_para_editar = df_tabela_colab[
-        ["ID_Treinamento", "Nome_Treinamento", "Grupo", "Status"]
-    ].sort_values("ID_Treinamento").reset_index(drop=True)
-
-    df_editado = st.data_editor(
-        df_para_editar,
-        column_config={
-            "ID_Treinamento": st.column_config.TextColumn("ID", disabled=True),
-            "Nome_Treinamento": st.column_config.TextColumn("Treinamento", disabled=True),
-            "Grupo": st.column_config.TextColumn("Grupo", disabled=True),
-            "Status": st.column_config.SelectboxColumn(
-                "Status",
-                options=LISTA_STATUS,
-                required=True,
-            ),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key=f"editor_{id_colaborador_selecionado}",
-    )
-
-    if st.button("💾 Salvar Alterações", type="primary"):
-        with st.spinner("Gravando alterações no Google Sheets..."):
-            try:
-                qtd_alteracoes = salvar_alteracoes(
-                    planilha, df_editado, df_registros, id_colaborador_selecionado
+            if not visao_detalhada:
+                fig1 = px.bar(
+                    dados_grupo,
+                    x="Grupo",
+                    y="Percentual",
+                    color="Situação",
+                    barmode="stack",
+                    text="Percentual",
+                    color_discrete_map={
+                        "Realizado": "#2E7D32",
+                        "Não Realizado": "#C62828",
+                    },
+                    labels={"Percentual": "% do Grupo"},
                 )
-                limpar_cache_e_recarregar()
-            except Exception as erro:
-                st.error("Ocorreu um erro ao salvar as alterações.")
-                st.exception(erro)
-                st.stop()
+                fig1.update_traces(texttemplate="%{text:.1f}%", textposition="inside")
+                fig1.update_layout(yaxis_range=[0, 100])
+            else:
+                fig1 = px.bar(
+                    dados_grupo,
+                    x="Grupo",
+                    y="Quantidade",
+                    color="Status",
+                    barmode="stack",
+                    category_orders={"Status": LISTA_STATUS},
+                )
 
-        if qtd_alteracoes > 0:
-            st.success(
-                f"✅ {qtd_alteracoes} alteração(ões) salva(s) com sucesso às "
-                f"{datetime.now().strftime('%H:%M:%S')}!"
-            )
-            st.rerun()
+            st.plotly_chart(fig1, use_container_width=True)
+
+        # ---- Gráfico 2: Quantidade de pendentes por grupo ----
+        with grafico_col2:
+            st.markdown("**Treinamentos Pendentes (Status 0) por Grupo**")
+            dados_pendentes = calcular_pendentes_por_grupo(df_tabela_colab)
+
+            if dados_pendentes.empty:
+                st.success("Nenhum treinamento pendente para este colaborador! 🎉")
+            else:
+                fig2 = px.bar(
+                    dados_pendentes,
+                    x="Grupo",
+                    y="Pendentes",
+                    text="Pendentes",
+                    color_discrete_sequence=["#C62828"],
+                )
+                fig2.update_traces(textposition="outside")
+                st.plotly_chart(fig2, use_container_width=True)
+
+        st.divider()
+
+        # =============================================================
+        # SEÇÃO - EDIÇÃO DOS TREINAMENTOS
+        # =============================================================
+        st.subheader("✏️ Edição dos Treinamentos")
+        st.caption(
+            "Altere o status diretamente na tabela e clique em "
+            "**Salvar Alterações** para gravar no Google Sheets."
+        )
+
+        df_para_editar = df_tabela_colab[
+            ["ID_Treinamento", "Nome_Treinamento", "Grupo", "Status"]
+        ].sort_values("ID_Treinamento").reset_index(drop=True)
+
+        df_editado = st.data_editor(
+            df_para_editar,
+            column_config={
+                "ID_Treinamento": st.column_config.TextColumn("ID", disabled=True),
+                "Nome_Treinamento": st.column_config.TextColumn("Treinamento", disabled=True),
+                "Grupo": st.column_config.TextColumn("Grupo", disabled=True),
+                "Status": st.column_config.SelectboxColumn(
+                    "Status",
+                    options=LISTA_STATUS,
+                    required=True,
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key=f"editor_{id_colaborador_selecionado}",
+        )
+
+        if st.button("💾 Salvar Alterações", type="primary"):
+            with st.spinner("Gravando alterações no Google Sheets..."):
+                try:
+                    qtd_alteracoes = salvar_alteracoes(
+                        planilha, df_editado, df_registros, id_colaborador_selecionado
+                    )
+                    limpar_cache_e_recarregar()
+                except Exception as erro:
+                    st.error("Ocorreu um erro ao salvar as alterações.")
+                    st.exception(erro)
+                    st.stop()
+
+            if qtd_alteracoes > 0:
+                st.success(
+                    f"✅ {qtd_alteracoes} alteração(ões) salva(s) com sucesso às "
+                    f"{datetime.now().strftime('%H:%M:%S')}!"
+                )
+                st.rerun()
+            else:
+                st.info("Nenhuma alteração detectada para salvar.")
+
+    # -----------------------------------------------------------------
+    # ABA 2 - VISÃO GERAL: TODOS OS COLABORADORES x GRUPOS DE TREINAMENTO
+    # -----------------------------------------------------------------
+    with aba_geral:
+        st.subheader(f"🌍 Visão Geral — Colaboradores '{situacao_filtro}'")
+        st.caption(
+            "Cada linha é um colaborador e cada coluna é um grupo de treinamento, "
+            "mostrando quantos treinamentos ainda faltam naquele grupo "
+            "(ou 'Completo' quando todos já foram realizados)."
+        )
+
+        matriz_geral = montar_matriz_geral(
+            df_treinamentos, df_registros, df_colab_filtrado
+        )
+
+        # Métricas consolidadas do grupo de colaboradores filtrado
+        total_colab = len(matriz_geral)
+        media_progresso = matriz_geral["% Progresso"].mean() if total_colab > 0 else 0
+        qtd_100pct = (matriz_geral["% Progresso"] == 100).sum()
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Colaboradores nesta visão", total_colab)
+        col_b.metric("Progresso médio do grupo", f"{media_progresso:.1f}%")
+        col_c.metric("Colaboradores 100% concluídos", int(qtd_100pct))
+
+        # Busca rápida por nome (opcional) para listas grandes
+        busca_nome = st.text_input(
+            "🔍 Buscar colaborador pelo nome", placeholder="Digite parte do nome..."
+        )
+        if busca_nome:
+            matriz_exibicao = matriz_geral[
+                matriz_geral["Colaborador"].str.contains(busca_nome, case=False, na=False)
+            ]
         else:
-            st.info("Nenhuma alteração detectada para salvar.")
+            matriz_exibicao = matriz_geral
+
+        st.dataframe(
+            matriz_exibicao,
+            column_config={
+                "% Progresso": st.column_config.ProgressColumn(
+                    "% Progresso", min_value=0, max_value=100, format="%.1f%%"
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "💡 Dica: use a busca acima para localizar um colaborador específico "
+            "sem precisar trocar o filtro da barra lateral."
+        )
 
 
 if __name__ == "__main__":
