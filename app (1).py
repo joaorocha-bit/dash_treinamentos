@@ -287,7 +287,7 @@ def montar_matriz_geral(df_treinamentos, df_registros, df_colaboradores):
     def formatar_celula(qtd):
         return "✅ Completo" if qtd == 0 else f"⚠️ {qtd} pendente(s)"
 
-    pivot_formatado = pivot_pendentes.applymap(formatar_celula)
+    pivot_formatado = pivot_pendentes.map(formatar_celula)
     pivot_formatado = pivot_formatado.reindex(resumo["Nome"]).reset_index()
 
     matriz_final = resumo.merge(pivot_formatado, on="Nome", how="left")
