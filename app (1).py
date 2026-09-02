@@ -427,7 +427,7 @@ def main():
     # =================================================================
     # ABAS PRINCIPAIS: Dashboard individual x Visão Geral (todos colaboradores)
     # =================================================================
-    aba_geral, aba_individual = st.tabs(["🌍 Visão Geral", "👤 Colaborador"])
+    aba_geral, aba_individual = st.tabs(["Visão Geral", "Visão Colaborador"])
 
     # -----------------------------------------------------------------
     # ABA 1 - DASHBOARD E EDIÇÃO DO COLABORADOR SELECIONADO
@@ -438,7 +438,7 @@ def main():
             df_treinamentos, df_registros, id_colaborador_selecionado
         )
 
-        st.subheader(f"📊 Visão Geral — {nome_selecionado}")
+        st.subheader(f"Visão Colaborador — {nome_selecionado}")
 
         total, realizados, nao_realizados, percentual = calcular_metricas(df_tabela_colab)
 
@@ -562,7 +562,7 @@ def main():
     # ABA 2 - VISÃO GERAL: TODOS OS COLABORADORES x GRUPOS DE TREINAMENTO
     # -----------------------------------------------------------------
     with aba_geral:
-        st.subheader(f"🌍 Visão Geral — Colaboradores '{situacao_filtro}'")
+        st.subheader(f"Visão Geral — Colaboradores '{situacao_filtro}'")
         st.caption(
             "Cada linha é um colaborador e cada coluna é um grupo de treinamento, "
             "mostrando quantos treinamentos ainda faltam naquele grupo "
@@ -579,8 +579,8 @@ def main():
         qtd_100pct = (matriz_geral["% Progresso"] == 100).sum()
 
         col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Colaboradores nesta visão", total_colab)
-        col_b.metric("Progresso médio do grupo", f"{media_progresso:.1f}%")
+        col_a.metric("Colaboradores", total_colab)
+        col_b.metric("Progresso médio", f"{media_progresso:.1f}%")
         col_c.metric("Colaboradores 100% concluídos", int(qtd_100pct))
 
         # Busca rápida por nome (opcional) para listas grandes
