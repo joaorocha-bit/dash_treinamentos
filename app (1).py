@@ -427,7 +427,7 @@ def main():
     # =================================================================
     # ABAS PRINCIPAIS: Dashboard individual x Visão Geral (todos colaboradores)
     # =================================================================
-    aba_individual, aba_geral = st.tabs(["🌍 Visão Geral", "👤 Colaborador"])
+    aba_geral, aba_individual = st.tabs(["🌍 Visão Geral", "👤 Colaborador"])
 
     # -----------------------------------------------------------------
     # ABA 1 - DASHBOARD E EDIÇÃO DO COLABORADOR SELECIONADO
