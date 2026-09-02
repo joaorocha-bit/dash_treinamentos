@@ -365,7 +365,7 @@ def salvar_alteracoes(planilha, df_editado, df_registros_original, id_colaborado
 # =====================================================================
 
 def main():
-    st.title("📋 Gestão e Acompanhamento de Treinamentos")
+    st.title("TREINAMENTOS EQUIPE DE ASSISTENTES SAP")
     st.caption(f"Aba de registro ativa: **{NOME_ABA_REGISTRO}**")
 
     # --- Conexão e carregamento inicial ---
